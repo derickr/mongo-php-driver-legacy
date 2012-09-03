@@ -70,19 +70,21 @@ bailout:
 /* Topology discovery */
 
 /* - Helpers */
-static void mongo_discover_topology(mongo_con_manager *manager, mongo_servers *servers)
+static int mongo_discover_topology(mongo_con_manager *manager, mongo_servers *servers, char **error_message)
 {
 	int i, j;
-	char *hash;
 	mongo_connection *con;
-	char *error_message;
 	char *repl_set_name = servers->repl_set_name ? strdup(servers->repl_set_name) : NULL;
 	int nr_hosts;
 	char **found_hosts = NULL;
 	char *tmp_hash;
 	int   res;
+	int   return_value = 1, tem_length;
 
 	for (i = 0; i < servers->count; i++) {
+		char *rs_error_message;
+		char *hash;
+
 		hash = mongo_server_create_hash(servers->server[i]);
 		mongo_manager_log(manager, MLOG_CON, MLOG_FINE, "discover_topology: checking is_master for %s", hash);
 		con = mongo_manager_connection_find_by_hash(manager, hash);
@@ -93,15 +95,24 @@ static void mongo_discover_topology(mongo_con_manager *manager, mongo_servers *s
 			continue;
 		}
 		
-		res = mongo_connection_rs_status(manager, con, (char**) &repl_set_name, (int*) &nr_hosts, (char***) &found_hosts, (char**) &error_message, servers->server[i]);
+		res = mongo_connection_rs_status(manager, con, (char**) &repl_set_name, (int*) &nr_hosts, (char***) &found_hosts, (char**) &rs_error_message, servers->server[i]);
 		switch (res) {
 			case 0:
 				/* Something is wrong with the connection, we need to remove
 				 * this from our list */
-				mongo_manager_log(manager, MLOG_CON, MLOG_WARN, "discover_topology: is_master return with an error for %s:%d: [%s]", servers->server[i]->host, servers->server[i]->port, error_message);
-				free(error_message);
+				mongo_manager_log(manager, MLOG_CON, MLOG_WARN, "discover_topology: is_master return with an error for %s:%d: [%s]", servers->server[i]->host, servers->server[i]->port, rs_error_message);
 				mongo_manager_connection_deregister(manager, con);
-				break;
+				tem_length = 256 + strlen(servers->server[i]->host) + strlen(rs_error_message);
+				*error_message = malloc(tem_length);
+				snprintf(
+					*error_message, tem_length,
+					"While discovering nodes, is_master returned with an error for %s:%d: %s",
+					servers->server[i]->host, servers->server[i]->port, rs_error_message
+				);
+				free(rs_error_message);
+				free(hash);
+				return_value = 0;
+				goto bailout;
 
 			case 3:
 				mongo_manager_log(manager, MLOG_CON, MLOG_WARN, "discover_topology: is_master worked, but we need to remove the seed host's connection");
@@ -159,9 +170,11 @@ static void mongo_discover_topology(mongo_con_manager *manager, mongo_servers *s
 
 		free(hash);
 	}
+bailout:
 	if (repl_set_name) {
 		free(repl_set_name);
 	}
+	return return_value;
 }
 
 /* Fetching connections */
@@ -203,7 +216,9 @@ static mongo_connection *mongo_get_read_write_connection_replicaset(mongo_con_ma
 	}
 	/* Discover more nodes. This also adds a connection to "servers" for each
 	 * new node */
-	mongo_discover_topology(manager, servers);
+	if (!mongo_discover_topology(manager, servers, error_message)) {
+		return NULL;
+	}
 	/* Depending on whether we want a read or a write connection, run the correct algorithms */
 	if (connection_flags & MONGO_CON_FLAG_WRITE) {
 		mongo_read_preference tmp_rp;

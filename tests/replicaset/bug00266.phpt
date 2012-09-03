@@ -14,14 +14,11 @@ $host2  = hostname("STANDALONE");
 $port2 = port("STANDALONE");
 $ip2   = gethostbyname($host2);
 
-$m = new Mongo("$ip:$port,$ip2:$port2", array("replicaSet" => true));
-$coll = $m->selectCollection("phpunit","bug00266");
 try {
-    print_r($coll->getIndexInfo());
-} catch(MongoCursorException $e) {
-    var_dump($e->getMessage());
+	$m = new Mongo("$ip:$port,$ip2:$port2", array("replicaSet" => true));
+} catch (MongoConnectionException $e) {
+	var_dump( $e->getMessage() );
 }
 ?>
---EXPECT--
-string(25) "couldn't determine master"
-
+--EXPECTF--
+string(102) "While discovering nodes, is_master returned with an error for %s:%d: Not a replicaset member"
