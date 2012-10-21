@@ -224,10 +224,15 @@ static zval* append_getlasterror(zval *coll, buffer *buf, zval *options TSRMLS_D
   mongo_collection *c = (mongo_collection*)zend_object_store_get_object(coll TSRMLS_CC);
   mongo_db *db = (mongo_db*)zend_object_store_get_object(c->parent TSRMLS_CC);
   int response, safe = 0, fsync = 0, timeout = -1;
-	mongo_link *link;
+	mongo_link *link = (mongo_link*) zend_object_store_get_object(c->link TSRMLS_CC);
 
 	timeout_p = zend_read_static_property(mongo_ce_Cursor, "timeout", strlen("timeout"), NOISY TSRMLS_CC);
 	timeout = Z_LVAL_P(timeout_p);
+
+	/* Read the default_safe property from the link */
+	if (link->servers->default_safe != -1) {
+		safe = link->servers->default_safe;
+	}
 
 	/* Fetch all the options from the options array*/
 	if (options && !IS_SCALAR_P(options)) {
