@@ -86,8 +86,6 @@ typedef unsigned __int64 uint64_t;
 #define MLOG_NONE    0
 #define MLOG_ALL    31 /* Must be the bit sum of all above */
 
-
-
 /* FIXME: This should be dynamic.. Although mongod doesn't allow more then 12
  * replicaset members, there is nothing preventing us from connecting to 20 mongos' */
 #define MAX_SERVERS_LIMIT   16
