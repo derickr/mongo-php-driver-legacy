@@ -282,10 +282,10 @@ void mongo_connection_destroy(mongo_con_manager *manager, void *data)
 
 	/* Only close the connection if it matches the current PID */
 	if (current_pid == connection_pid) {
-		mongo_manager_log(manager, MLOG_CON, MLOG_FINE, "mongo_connection_destroy: Destroying connection object for '%s'", con->hash);
+		mongo_manager_log(manager, MLOG_CON, MLOG_FINE, "mongo_connection_destroy: Destroying connection object for %s", con->hash);
 
 		if (con->socket != -1) {
-		mongo_manager_log(manager, MLOG_CON, MLOG_FINE, "mongo_connection_destroy: Closing socket for %s.", con->hash);
+			mongo_manager_log(manager, MLOG_CON, MLOG_FINE, "mongo_connection_destroy: Closing socket for %s.", con->hash);
 
 #ifdef WIN32
 			shutdown(con->socket, SD_BOTH);
