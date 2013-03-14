@@ -406,22 +406,24 @@ int mongo_store_option(mongo_con_manager *manager, mongo_servers *servers, char 
 		int mechanism;
 
 		mongo_manager_log(manager, MLOG_PARSE, MLOG_INFO, "- Found option 'authMechanism': '%s'", option_value);
-		/* FIXME: GSSAPI isn't implemented yet */
-		if (strcasecmp(option_value, "GSSAPI") == 0) {
-			mechanism = MONGO_AUTH_MECHANISM_GSSAPI;
-			*error_message = strdup("GSSAPI authMechanism is currently not supported");
-			return 3;
-		}
-		else if (strcasecmp(option_value, "MONGODB-CR") == 0) {
+
+		if (strcasecmp(option_value, "MONGODB-CR") == 0) {
 			mechanism = MONGO_AUTH_MECHANISM_MONGODB_CR;
-		}
-		else {
-			int len = strlen(option_value) + sizeof("Unknown authMechanism '%s'. Currently only MONGODB-CR is supported");
+#if 0
+		} else if (strcasecmp(option_value, "GSSAPI") == 0) {
+			/* FIXME: GSSAPI isn't implemented yet */
+			mechanism = MONGO_AUTH_MECHANISM_GSSAPI;
+			*error_message = strdup("The authMechanism 'GSSAPI' is not supported. Currently only MONGODB-CR is implemented.");
+			return 3;
+#endif
+		} else {
+			int len = strlen(option_value) + sizeof("The authMechanism '' is not supported. Currently only MONGODB-CR is implemented.");
 
 			*error_message = malloc(len + 1);
-			snprintf(*error_message, len, "Unknown authMechanism '%s'. Currently only MONGODB-CR is supported", option_value);
+			snprintf(*error_message, len, "The authMechanism '%s' is not supported. Currently only MONGODB-CR is implemented.", option_value);
 			return 3;
 		}
+
 		for (i = 0; i < servers->count; i++) {
 			servers->server[i]->mechanism = mechanism;
 		}
