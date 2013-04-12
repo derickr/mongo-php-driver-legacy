@@ -47,6 +47,11 @@ class MongoShellServer {
         return $this->verifyWrite("killMaster()");
     }
 
+    public function putSecondariesIntoMaintenance($bool) {
+        $int = (int)$bool;
+        return $this->verifyWrite("putSecondariesIntoMaintenance($int)");
+    }
+
     public function restartMaster() {
         return $this->verifyWrite("restartMaster()");
     }
