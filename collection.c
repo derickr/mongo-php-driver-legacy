@@ -713,6 +713,35 @@ static void do_gle_op(mongo_con_manager *manager, mongo_connection *connection, 
 	return;
 }
 
+static void php_mongo_collection_insert(zval *collection_ptr, mongo_collection *c, zval *document, zval *options, zval *return_value)
+{
+	mongo_buffer      buf;
+	mongo_connection *connection;
+	int               retval;
+
+	if ((connection = get_server(c, MONGO_CON_FLAG_WRITE TSRMLS_CC)) == 0) {
+		RETURN_FALSE;
+	}
+
+	CREATE_BUF(buf, INITIAL_BUF_SIZE);
+	if (FAILURE == php_mongo_write_insert(&buf, Z_STRVAL_P(c->ns), document, connection->max_bson_size, connection->max_message_size TSRMLS_CC)) {
+		efree(buf.start);
+		RETURN_FALSE;
+	}
+
+#if MONGO_PHP_STREAMS
+	mongo_log_stream_insert(connection, document, options TSRMLS_CC);
+#endif
+
+	/* retval == -1 means a GLE response was received, so send_message() has
+	 * either set return_value or thrown an exception via do_gle_op(). */
+	retval = send_message(collection_ptr, connection, &buf, options, return_value TSRMLS_CC);
+	if (retval != -1) {
+		RETVAL_BOOL(retval);
+	}
+
+	efree(buf.start);
+}
 
 /* {{{ proto bool|array MongoCollection::insert(array|object document [, array options])
    Insert a document into the collection and return the database response if
@@ -720,41 +749,17 @@ static void do_gle_op(mongo_con_manager *manager, mongo_connection *connection, 
    document is not empty. */
 PHP_METHOD(MongoCollection, insert)
 {
-	zval *a, *options = 0;
+	zval *document, *options = NULL;
 	mongo_collection *c;
-	mongo_buffer buf;
-	mongo_connection *connection;
-	int retval;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z|z", &a, &options) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z|z", &document, &options) == FAILURE) {
 		return;
 	}
-	MUST_BE_ARRAY_OR_OBJECT(1, a);
+	MUST_BE_ARRAY_OR_OBJECT(1, document);
 
 	PHP_MONGO_GET_COLLECTION(getThis());
 
-	if ((connection = get_server(c, MONGO_CON_FLAG_WRITE TSRMLS_CC)) == 0) {
-		RETURN_FALSE;
-	}
-
-	CREATE_BUF(buf, INITIAL_BUF_SIZE);
-	if (FAILURE == php_mongo_write_insert(&buf, Z_STRVAL_P(c->ns), a, connection->max_bson_size, connection->max_message_size TSRMLS_CC)) {
-		efree(buf.start);
-		RETURN_FALSE;
-	}
-
-#if MONGO_PHP_STREAMS
-	mongo_log_stream_insert(connection, a, options TSRMLS_CC);
-#endif
-
-	/* retval == -1 means a GLE response was received, so send_message() has
-	 * either set return_value or thrown an exception via do_gle_op(). */
-	retval = send_message(this_ptr, connection, &buf, options, return_value TSRMLS_CC);
-	if (retval != -1) {
-		RETVAL_BOOL(retval);
-	}
-
-	efree(buf.start);
+	php_mongo_collection_insert(this_ptr, c, document, options, return_value);
 }
 /* }}} */
 
@@ -1093,13 +1098,114 @@ PHP_METHOD(MongoCollection, remove)
 }
 /* }}} */
 
+/* Returns the index name from the options, if available, or from the keys with
+ * to_index_string */
+static char *mongo_create_index_name(zval *keys, zval *options, int *key_str_len TSRMLS_DC)
+{
+	char *name = NULL;
+
+	if (options && zend_hash_find(HASH_P(options), "name", strlen("name") + 1, (void**)&name) == SUCCESS) {
+		return estrdup(name);
+	} else {
+		return to_index_string(keys, key_str_len TSRMLS_CC);
+	}
+
+	return NULL;
+}
+
+/* Creates the index by inserting it in the system.indexes collection */
+static void mongo_do_create_index(zval *collection_ptr, mongo_collection *index_collection, zval *index_spec, zval *options, zval *return_value, int ensure TSRMLS_DC)
+{
+	zval *db, *collection, *data;
+	char *index_name;
+	int   key_str_len;
+	mongo_collection *system_indexes_collection;
+
+	/* get the system.indexes collection */
+	db = index_collection->parent;
+	collection = php_mongodb_selectcollection(db, "system.indexes", strlen("system.indexes") TSRMLS_CC);
+
+	PHP_MONGO_CHECK_EXCEPTION1(&collection);
+	system_indexes_collection = (mongo_collection*)zend_object_store_get_object((collection) TSRMLS_CC);
+	MONGO_CHECK_INITIALIZED(system_indexes_collection->ns, MongoCollection);
+
+	/* set up data */
+	MAKE_STD_ZVAL(data);
+	array_init(data);
+
+	/* ns */
+	add_assoc_zval(data, "ns", index_collection->ns);
+	zval_add_ref(&index_collection->ns);
+	add_assoc_zval(data, "key", index_spec);
+	zval_add_ref(&index_spec);
+
+	/* create name */
+	index_name = mongo_create_index_name(index_spec, options, &key_str_len TSRMLS_CC);
+	if (key_str_len > MAX_INDEX_NAME_LEN) {
+		zend_throw_exception_ex(mongo_ce_Exception, 14 TSRMLS_CC, "index name too long: %d, max %d characters", key_str_len, MAX_INDEX_NAME_LEN);
+		efree(index_name);
+		return;
+	}
+
+	if (options) {
+		zval temp, **gle_pp, **fsync_pp, **timeout_pp;
+
+		zend_hash_merge(HASH_P(data), HASH_P(options), (void (*)(void*))zval_add_ref, &temp, sizeof(zval*), 1);
+
+		if (zend_hash_find(HASH_P(options), "safe", strlen("safe") + 1, (void**)&gle_pp) == SUCCESS) {
+			zend_hash_del(HASH_P(data), "safe", strlen("safe") + 1);
+		}
+		if (zend_hash_find(HASH_P(options), "w", strlen("w") + 1, (void**)&gle_pp) == SUCCESS) {
+			zend_hash_del(HASH_P(data), "w", strlen("w") + 1);
+		}
+		if (zend_hash_find(HASH_P(options), "fsync", strlen("fsync") + 1, (void**)&fsync_pp) == SUCCESS) {
+			zend_hash_del(HASH_P(data), "fsync", strlen("fsync") + 1);
+		}
+		if (zend_hash_find(HASH_P(options), "timeout", strlen("timeout") + 1, (void**)&timeout_pp) == SUCCESS) {
+			zend_hash_del(HASH_P(data), "timeout", strlen("timeout") + 1);
+		}
+
+		zval_add_ref(&options);
+	} else {
+		zval *opts;
+
+		MAKE_STD_ZVAL(opts);
+		array_init(opts);
+		options = opts;
+	}
+
+	add_assoc_stringl(data, "name", index_name, key_str_len, 1);
+
+	php_mongo_collection_insert(collection_ptr, system_indexes_collection, data, options, return_value);
+
+	zval_ptr_dtor(&options);
+	zval_ptr_dtor(&data);
+	zval_ptr_dtor(&collection);
+	efree(index_name);
+}
+
+/* {{{ proto bool MongoCollection::createIndex(array keys [, array options])
+   Create the $keys index */
+PHP_METHOD(MongoCollection, createIndex)
+{
+	zval *keys, *options = NULL;
+	mongo_collection *c;
+
+	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "a|a", &keys, &options) == FAILURE) {
+		return;
+	}
+
+	PHP_MONGO_GET_COLLECTION(getThis());
+	mongo_do_create_index(this_ptr, c, keys, options, return_value, 0 TSRMLS_CC);
+}
+/* }}} */
+
 /* {{{ proto bool MongoCollection::ensureIndex(mixed keys [, array options])
    Create the $keys index if it does not already exist */
 PHP_METHOD(MongoCollection, ensureIndex)
 {
-	zval *keys, *options = 0, *db, *collection, *data;
+	zval *keys, *options = 0;
 	mongo_collection *c;
-	zend_bool done_name = 0;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "z|z", &keys, &options) == FAILURE) {
 		return;
@@ -1124,85 +1230,8 @@ PHP_METHOD(MongoCollection, ensureIndex)
 	}
 
 	PHP_MONGO_GET_COLLECTION(getThis());
+	mongo_do_create_index(this_ptr, c, keys, options, return_value, 0 TSRMLS_CC);
 
-	/* get the system.indexes collection */
-	db = c->parent;
-
-	collection = php_mongodb_selectcollection(db, "system.indexes", strlen("system.indexes") TSRMLS_CC);
-	PHP_MONGO_CHECK_EXCEPTION2(&keys, &collection);
-
-	/* set up data */
-	MAKE_STD_ZVAL(data);
-	array_init(data);
-
-	/* ns */
-	add_assoc_zval(data, "ns", c->ns);
-	zval_add_ref(&c->ns);
-	add_assoc_zval(data, "key", keys);
-	zval_add_ref(&keys);
-
-	if (options) {
-		zval temp, **gle_pp, **fsync_pp, **timeout_pp, **name;
-
-		zend_hash_merge(HASH_P(data), HASH_P(options), (void (*)(void*))zval_add_ref, &temp, sizeof(zval*), 1);
-
-		if (zend_hash_find(HASH_P(options), "safe", strlen("safe") + 1, (void**)&gle_pp) == SUCCESS) {
-			zend_hash_del(HASH_P(data), "safe", strlen("safe") + 1);
-		}
-		if (zend_hash_find(HASH_P(options), "w", strlen("w") + 1, (void**)&gle_pp) == SUCCESS) {
-			zend_hash_del(HASH_P(data), "w", strlen("w") + 1);
-		}
-		if (zend_hash_find(HASH_P(options), "fsync", strlen("fsync") + 1, (void**)&fsync_pp) == SUCCESS) {
-			zend_hash_del(HASH_P(data), "fsync", strlen("fsync") + 1);
-		}
-		if (zend_hash_find(HASH_P(options), "timeout", strlen("timeout") + 1, (void**)&timeout_pp) == SUCCESS) {
-			zend_hash_del(HASH_P(data), "timeout", strlen("timeout") + 1);
-		}
-
-		if (zend_hash_find(HASH_P(options), "name", strlen("name") + 1, (void**)&name) == SUCCESS) {
-			if (Z_TYPE_PP(name) == IS_STRING && Z_STRLEN_PP(name) > MAX_INDEX_NAME_LEN) {
-				zval_ptr_dtor(&data);
-				zend_throw_exception_ex(mongo_ce_Exception, 14 TSRMLS_CC, "index name too long: %d, max %d characters", Z_STRLEN_PP(name), MAX_INDEX_NAME_LEN);
-				return;
-			}
-			done_name = 1;
-		}
-		zval_add_ref(&options);
-	} else {
-		zval *opts;
-
-		MAKE_STD_ZVAL(opts);
-		array_init(opts);
-		options = opts;
-	}
-
-	if (!done_name) {
-		char *key_str;
-		int   key_str_len;
-
-		key_str = to_index_string(keys, &key_str_len TSRMLS_CC);
-		if (!key_str) {
-			zval_ptr_dtor(&data);
-			zval_ptr_dtor(&options);
-			return;
-		}
-
-		if (key_str_len > MAX_INDEX_NAME_LEN) {
-			zval_ptr_dtor(&data);
-			zend_throw_exception_ex(mongo_ce_Exception, 14 TSRMLS_CC, "index name too long: %d, max %d characters", key_str_len, MAX_INDEX_NAME_LEN);
-			efree(key_str);
-			zval_ptr_dtor(&options);
-			return;
-		}
-
-		add_assoc_stringl(data, "name", key_str, key_str_len, 0);
-	}
-
-	MONGO_METHOD2(MongoCollection, insert, return_value, collection, data, options);
-
-	zval_ptr_dtor(&options);
-	zval_ptr_dtor(&data);
-	zval_ptr_dtor(&collection);
 	zval_ptr_dtor(&keys);
 }
 /* }}} */
@@ -1912,6 +1941,11 @@ MONGO_ARGINFO_STATIC ZEND_BEGIN_ARG_INFO_EX(arginfo_ensureIndex, 0, ZEND_RETURN_
 	ZEND_ARG_ARRAY_INFO(0, options, 0)
 ZEND_END_ARG_INFO()
 
+MONGO_ARGINFO_STATIC ZEND_BEGIN_ARG_INFO_EX(arginfo_createIndex, 0, ZEND_RETURN_VALUE, 1)
+	ZEND_ARG_INFO(0, index_specification)
+	ZEND_ARG_ARRAY_INFO(0, options, 0)
+ZEND_END_ARG_INFO()
+
 MONGO_ARGINFO_STATIC ZEND_BEGIN_ARG_INFO_EX(arginfo_deleteIndex, 0, ZEND_RETURN_VALUE, 1)
 	ZEND_ARG_INFO(0, string_OR_array_of_keys)
 ZEND_END_ARG_INFO()
@@ -1967,6 +2001,7 @@ static zend_function_entry MongoCollection_methods[] = {
 	PHP_ME(MongoCollection, find, arginfo_find, ZEND_ACC_PUBLIC)
 	PHP_ME(MongoCollection, findOne, arginfo_find_one, ZEND_ACC_PUBLIC)
 	PHP_ME(MongoCollection, findAndModify, arginfo_findandmodify, ZEND_ACC_PUBLIC)
+	PHP_ME(MongoCollection, createIndex, arginfo_createIndex, ZEND_ACC_PUBLIC)
 	PHP_ME(MongoCollection, ensureIndex, arginfo_ensureIndex, ZEND_ACC_PUBLIC)
 	PHP_ME(MongoCollection, deleteIndex, arginfo_deleteIndex, ZEND_ACC_PUBLIC)
 	PHP_ME(MongoCollection, deleteIndexes, arginfo_no_parameters, ZEND_ACC_PUBLIC)

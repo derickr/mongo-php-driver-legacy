@@ -193,6 +193,9 @@ MongoCollection
     1: update (optional)
     2: fields (optional)
     3: options (optional)
+  Method createIndex expects 2 parameters
+    0: index_specification
+    1: options (optional)
   Method ensureIndex expects 2 parameters
     0: key_OR_array_of_keys
     1: options (optional)
