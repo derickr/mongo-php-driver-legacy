@@ -1,13 +1,24 @@
 --TEST--
-Test for PHP-1382: Last document missing
+Test for PHP-1382: Iteration with getNext()/hasNext() skips last document (with getmore)
 --SKIPIF--
 <?php require_once "tests/utils/standalone.inc" ?>
 --FILE--
 <?php
 require_once "tests/utils/server.inc";
 
+function log_getmore($server, $info) {
+    echo "Issuing getmore\n";
+}
+
+$ctx = stream_context_create(array(
+    'mongodb' => array(
+        'log_getmore' => 'log_getmore',
+    ),
+));
+
 $host = MongoShellServer::getStandaloneInfo();
-$m = new MongoClient($host);
+$m = new MongoClient($host, array(), array('context' => $ctx));
+
 $d = $m->selectDb(dbname());
 $c = $m->selectCollection(dbname(), collname(__FILE__));
 $c->drop();
@@ -31,6 +42,7 @@ string(5) "test1"
 a: 0 - 2
 b: 1 - 2
 string(5) "test2"
+Issuing getmore
 a: 1 - 3
 b: 2 - 3
 string(5) "test3"
