@@ -1,5 +1,5 @@
 --TEST--
-Test for PHP-1382: Last document missing
+Test for PHP-1382: hasNext() does not affect converting iterator to array
 --SKIPIF--
 <?php require_once "tests/utils/standalone.inc" ?>
 --FILE--
@@ -16,10 +16,12 @@ $c->save(array('_id' => 'test1'));
 $c->save(array('_id' => 'test2'));
 $c->save(array('_id' => 'test3'));
 $cur = $c->find(array(), array('_id'));
+var_dump($cur->hasNext());
 var_dump(iterator_to_array($cur));
 
 ?>
 --EXPECT--
+bool(true)
 array(3) {
   ["test1"]=>
   array(1) {
