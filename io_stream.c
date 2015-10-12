@@ -826,7 +826,7 @@ int mongo_connection_authenticate_mongodb_scram_sha1(mongo_con_manager *manager,
 	server_first_message_dup = estrdup(server_first_message);
 
 	/* the r= from the client_first_message appended with more chars from the server */
-	rskip = username_len+6; /* n,,n= and the coma before r */
+	rskip = username_len+6; /* n,,n= and the comma before r */
 
 	rnonce = php_strtok_r(server_first_message_dup, ",", &tok);
 	salt_base64 = php_strtok_r(NULL, ",", &tok)+2;
