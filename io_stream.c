@@ -63,6 +63,19 @@
 extern zend_class_entry *mongo_ce_ConnectionException;
 ZEND_EXTERN_MODULE_GLOBALS(mongo)
 
+/* returns 0 if equal, nonzero otherwise */
+static is_not_equal_str_const(const unsigned char *a, const unsigned char *b, const size_t size)
+{
+	unsigned char result = 0;
+	size_t i;
+
+	for (i = 0; i < size; i++) {
+		result |= a[i] ^ b[i];
+	}
+
+	return result;
+}
+
 #ifdef HAVE_OPENSSL_EXT
 # if PHP_VERSION_ID < 50600
 int php_mongo_verify_hostname(mongo_server_def *server, X509 *cert TSRMLS_DC)
@@ -828,7 +841,7 @@ int mongo_connection_authenticate_mongodb_scram_sha1(mongo_con_manager *manager,
 		return 0;
 	}
 
-	if (strncmp(rnonce, client_first_message+rskip, (PHP_MONGO_SCRAM_HASH_SIZE*2)+1-rskip) != 0) {
+	if (is_not_equal_str_const(rnonce, client_first_message+rskip, (PHP_MONGO_SCRAM_HASH_SIZE*2)+1-rskip)) {
 		efree(server_first_message);
 		efree(server_first_message_dup);
 		efree(client_first_message);
@@ -907,7 +920,7 @@ int mongo_connection_authenticate_mongodb_scram_sha1(mongo_con_manager *manager,
 	/* Verify the server signature */
 	server_final_message = (char *)php_base64_decode((unsigned char*)server_final_message_base64, server_final_message_base64_len, &server_final_message_len);
 	server_signature_base64 = php_base64_encode((unsigned char*)server_signature, server_signature_len, &server_signature_base64_len);
-	if (strncmp(server_final_message+2, (char *)server_signature_base64, server_signature_base64_len) != 0) {
+	if (is_not_equal_str_const(server_final_message+2, (char *)server_signature_base64, server_signature_base64_len)) {
 		efree(server_final_message);
 		*error_message = strdup("Server returned wrong ServerSignature");
 		return 0;
